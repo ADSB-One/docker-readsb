@@ -40,6 +40,7 @@ libzstd-dev && \
 apt autoremove -y && \
 rm -rf /readsb/rtl-sdr /var/lib/apt/lists/*
 
+# EXPOSE RELEVANT READSB PORTS
 EXPOSE 30001 30002 30003 30004 30005 30006 30007 30008 30009 30010
 
 RUN ["/readsb/readsb", "--help"]
