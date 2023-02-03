@@ -23,7 +23,7 @@ zlib1g-dev \
 zlib1g \
 libzstd-dev \
 libzstd1 && \
-git clone https://github.com/wiedehopf/readsb && \
+git clone https://github.com/wiedehopf/readsb . && \
 make && \
 apt remove -y \
 git \
