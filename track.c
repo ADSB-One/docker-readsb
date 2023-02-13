@@ -685,7 +685,7 @@ static int speed_check(struct aircraft *a, datasource_t source, double lat, doub
         inrange = override;
     }
 
-    if (receiverRangeExceeded && Modes.netReceiverId) {
+    if (receiverRangeExceeded && Modes.garbage_ports) {
         mm->pos_receiver_range_exceeded = 1;
         inrange = 0; // far outside receiver area
         mm->pos_ignore = 1;
@@ -1055,6 +1055,25 @@ static void setPosition(struct aircraft *a, struct modesMessage *mm, int64_t now
             a->receiverCount = div;
         }
     }
+#if defined(PRINT_UUIDS)
+    {
+        int done = 0;
+        for (int i = 0; i < RECENT_RECEIVER_IDS; i++) {
+            idTime *entry = &a->recentReceiverIds[i];
+            if (entry->id == mm->receiverId) {
+                entry->time = now;
+                done = 1;
+                break;
+            }
+        }
+        if (!done) {
+            a->recentReceiverIdsNext = (a->recentReceiverIdsNext + 1) % RECENT_RECEIVER_IDS;
+            idTime *entry = &a->recentReceiverIds[a->recentReceiverIdsNext];
+            entry->id = mm->receiverId;
+            entry->time = now;
+        }
+    }
+#endif
 
     if (Modes.netReceiverId && posReliable(a)) {
 
