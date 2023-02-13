@@ -24,7 +24,7 @@ zlib1g \
 libzstd-dev \
 libzstd1 && \
 git clone https://github.com/wiedehopf/readsb . && \
-make && \
+make PRINT_UUIDS=yes && \
 apt remove -y \
 git \
 ca-certificates \
