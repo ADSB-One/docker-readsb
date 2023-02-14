@@ -24,7 +24,7 @@ zlib1g \
 libzstd-dev \
 libzstd1 && \
 git clone https://github.com/wiedehopf/readsb . && \
-make PRINT_UUIDS=yes AIRCRAFT_HASH_BITS=11 OPTIMIZE="-O3 -march=native" && \
+make PRINT_UUIDS=yes AIRCRAFT_HASH_BITS=11 OPTIMIZE="-O3" && \
 apt remove -y \
 git \
 ca-certificates \
