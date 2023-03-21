@@ -1238,11 +1238,11 @@ static int make_net_connector(char *arg) {
     }
     struct net_connector *con = &Modes.net_connectors[Modes.net_connectors_count++];
     memset(con, 0x0, sizeof(struct net_connector));
-    char *connect_string = strdup(arg);
+    con->connect_string = strdup(arg);
 
     int maxTokens = 128;
     char* token[maxTokens];
-    tokenize(&connect_string, ",", token, maxTokens);
+    tokenize(&con->connect_string, ",", token, maxTokens);
 
     int m = 0;
     for(int k = 0; k < 128 && token[k]; k++) {
@@ -1253,9 +1253,8 @@ static int make_net_connector(char *arg) {
         }
 
         if (strncmp(token[k], "uuid=", 5) == 0) {
-            con->uuid = cmalloc(140);
-            strncpy(con->uuid, token[k] + 5, 135);
-            fprintf(stderr, "con->uuid: %s\n", con->uuid);
+            con->uuid = token[k] + 5;
+            //fprintf(stderr, "con->uuid: %s\n", con->uuid);
             continue; // don't increase m counter
         }
 
@@ -1770,6 +1769,9 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state) {
                 }
                 if (strcasecmp(token[0], "incrementId") == 0) {
                     Modes.incrementId = 1;
+                }
+                if (strcasecmp(token[0], "omitGlobeFiles") == 0) {
+                    Modes.omitGlobeFiles = 1;
                 }
             }
             break;
@@ -2430,14 +2432,14 @@ int main(int argc, char **argv) {
         }
     }
 
-    if (Modes.json_globe_index) {
+    if (Modes.json_globe_index && !Modes.omitGlobeFiles) {
         threadCreate(&Threads.globeBin, NULL, globeBinEntryPoint, NULL);
     }
 
     if (Modes.json_dir) {
         threadCreate(&Threads.json, NULL, jsonEntryPoint, NULL);
 
-        if (Modes.json_globe_index) {
+        if (Modes.json_globe_index && !Modes.omitGlobeFiles) {
             // globe_xxxx.json
             threadCreate(&Threads.globeJson, NULL, globeJsonEntryPoint, NULL);
         }
