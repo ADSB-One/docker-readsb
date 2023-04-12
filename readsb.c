@@ -51,6 +51,7 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+#include <sched.h>
 #include "readsb.h"
 #include "help.h"
 
@@ -193,8 +194,28 @@ static void configSetDefaults(void) {
     //receiverTest();
 
     struct rlimit limits;
-    getrlimit(RLIMIT_NOFILE, &limits);
-    Modes.max_fds = limits.rlim_cur;
+    int res = getrlimit(RLIMIT_NOFILE, &limits);
+    if (res != 0) {
+        fprintf(stderr, "WARNING: getrlimit(RLIMIT_NOFILE, &limits) returned the following error: \"%s\". Assuming bad limit query function, using up to 64 file descriptors \n",
+                strerror(errno));
+        Modes.max_fds = 64;
+    } else {
+        uint64_t limit = limits.rlim_cur;
+        // check limit for unreasonableness
+        if (limit < (uint64_t) 64) {
+            fprintf(stderr, "WARNING: getrlimit(RLIMIT_NOFILE, &limits) returned less than 64 fds for readsb to work with. Assuming bad limit query function, using up to 64 file descriptors. Fix RLIMIT!\n");
+            Modes.max_fds = 64;
+        } else if (limits.rlim_cur == RLIM_INFINITY) {
+            Modes.max_fds = INT32_MAX;
+        } else if (limit > (uint64_t) INT32_MAX) {
+            fprintf(stderr, "WARNING: getrlimit(RLIMIT_NOFILE, &limits) returned more than INT32_MAX ... This is just weird.\n");
+            Modes.max_fds = INT32_MAX;
+        } else {
+            Modes.max_fds = (int) limit;
+        }
+    }
+    Modes.max_fds -= 32; // reserve some fds for things we don't account for later like json writing.
+                         // this is an high estimate ... if ppl run out of fds for other stuff they should up rlimit
 
     Modes.sdr_buf_size = 16 * 16 * 1024;
 
@@ -209,6 +230,10 @@ static void configSetDefaults(void) {
     Modes.messageRateMult = 1.0f;
 
     Modes.apiShutdownDelay = 0 * SECONDS;
+
+    // default this on
+    Modes.enableAcasCsv = 1;
+    Modes.enableAcasJson = 1;
 }
 //
 //=========================================================================
@@ -1142,7 +1167,7 @@ static void backgroundTasks(int64_t now) {
 
     static int64_t next_flip = 0;
     if (now >= next_flip) {
-        icaoFilterExpire(now);
+        icaoFilterExpire();
         next_flip = now + MODES_ICAO_FILTER_TTL;
     }
 
@@ -1425,6 +1450,9 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state) {
             break;
         case OptForwardMlat:
             Modes.forward_mlat = 1;
+            break;
+        case OptForwardMlatSbs:
+            Modes.forward_mlat_sbs = 1;
             break;
         case OptOnlyAddr:
             Modes.onlyaddr = 1;
@@ -1750,7 +1778,9 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state) {
                     }
                 }
                 if (strcasecmp(token[0], "apiThreads") == 0) {
-                    Modes.apiThreadCount = atoi(token[1]);
+                    if (token[1]) {
+                        Modes.apiThreadCount = atoi(token[1]);
+                    }
                 }
                 if (strcasecmp(token[0], "accept_synthetic") == 0) {
                     Modes.dump_accept_synthetic_now = 1;
@@ -1772,6 +1802,12 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state) {
                 }
                 if (strcasecmp(token[0], "omitGlobeFiles") == 0) {
                     Modes.omitGlobeFiles = 1;
+                }
+                if (strcasecmp(token[0], "disableAcasCsv") == 0) {
+                    Modes.enableAcasCsv = 0;
+                }
+                if (strcasecmp(token[0], "disableAcasJson") == 0) {
+                    Modes.enableAcasJson = 0;
                 }
             }
             break;
@@ -2110,6 +2146,14 @@ static void configAfterParse() {
         Modes.net_only = 1;
     } else {
         Modes.net_only = 0;
+    }
+
+    if (Modes.api) {
+        Modes.max_fds_api = Modes.max_fds / 2;
+        Modes.max_fds_net = Modes.max_fds / 2;
+    } else {
+        Modes.max_fds_api = 0;
+        Modes.max_fds_net = Modes.max_fds;
     }
 }
 

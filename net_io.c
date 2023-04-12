@@ -678,9 +678,9 @@ void serviceListen(struct net_service *service, char *bind_addr, char *bind_port
         int newfds[16];
         int nfds, i;
 
-        int unix = 0;
+        int is_unix = 0;
         if (strncmp(p, "unix:", 5) == 0) {
-            unix = 1;
+            is_unix = 1;
             p += 5;
         }
 
@@ -698,7 +698,7 @@ void serviceListen(struct net_service *service, char *bind_addr, char *bind_port
             buf[len] = 0;
             p = end + 1;
         }
-        if (unix) {
+        if (is_unix) {
             if (service->unixSocket) {
                 fprintf(stderr, "Multiple unix sockets per service are not supported! %s (%s): %s\n",
                         buf, service->descr, Modes.aneterr);
@@ -1042,14 +1042,13 @@ static void modesAcceptClients(struct client *c, int64_t now) {
     errno = 0;
     while ((fd = anetGenericAccept(Modes.aneterr, listen_fd, saddr, &slen, SOCK_NONBLOCK)) >= 0) {
 
-        int maxModesClients = Modes.max_fds * 7 / 8;
-        if (Modes.modesClientCount > maxModesClients) {
-            // drop new modes clients if the count nears max_fds ... we want some extra fds for other stuff
+        if (Modes.modesClientCount > Modes.max_fds_net) {
+            // drop new modes clients if the count gets near resource limits
             anetCloseSocket(c->fd);
             static int64_t antiSpam;
             if (now > antiSpam) {
                 antiSpam = now + 30 * SECONDS;
-                fprintf(stderr, "<3> Can't accept new connection, limited to %d clients, consider increasing ulimit!\n", maxModesClients);
+                fprintf(stderr, "<3> Can't accept new connection, limited to %d clients, consider increasing ulimit!\n", Modes.max_fds_net);
             }
         }
 
@@ -2619,6 +2618,7 @@ static int decodeBinMessage(struct client *c, char *p, int remote, int64_t now, 
 
     // record reception time as the time we read it.
     mm->sysTimestamp = now;
+    //fprintf(stderr, "epoch: %.6f\n", mm->sysTimestamp / 1000.0);
 
 
     ch = *p++; // Grab the signal level
@@ -4266,7 +4266,7 @@ static void outputMessage(struct modesMessage *mm) {
         }
 
         if (ac && (!Modes.sbsReduce || mm->reduce_forward)) {
-            if ((!is_mlat || Modes.forward_mlat) && Modes.sbs_out.connections) {
+            if ((!is_mlat || Modes.forward_mlat_sbs) && Modes.sbs_out.connections) {
                 modesSendSBSOutput(mm, ac, &Modes.sbs_out);
             }
             if (is_mlat && Modes.sbs_out_mlat.connections) {
@@ -4292,38 +4292,6 @@ static void outputMessage(struct modesMessage *mm) {
         }
         if (Modes.dump_fw && (!Modes.dump_reduce || mm->reduce_forward)) {
             modesDumpBeastData(mm);
-        }
-    }
-
-    // In non-interactive non-quiet mode, display messages on standard output
-    if (
-            !Modes.quiet
-            || (Modes.show_only != BADDR && (mm->addr == Modes.show_only || mm->maybe_addr == Modes.show_only))
-            || (Modes.debug_7700 && ac && ac->squawk == 0x7700 && trackDataValid(&ac->squawk_valid))
-       ) {
-        displayModesMessage(mm);
-    }
-
-    if (Modes.debug_bogus) {
-        if (!Modes.synthetic_now) {
-            Modes.startup_time = mstime() - mm->timestamp / 12000U;
-        }
-        Modes.synthetic_now = Modes.startup_time + mm->timestamp / 12000U;
-
-        if (mm->addr != HEX_UNKNOWN && !(mm->addr & MODES_NON_ICAO_ADDRESS)) {
-            ac = aircraftCreate(mm->addr);
-        }
-        if (ac && ac->messages == 1 && ac->registration[0] == 0) {
-            fprintf(stdout, "%6llx %5.1f not in DB: %06x\n",
-                    (long long) mm->timestamp % 0x1000000,
-                    10 * log10(mm->signalLevel),
-                    mm->addr);
-            //displayModesMessage(mm);
-        } else if (0 && !ac) {
-            if (mm->addr != HEX_UNKNOWN && !dbGet(mm->addr, Modes.dbIndex))
-                displayModesMessage(mm);
-            if (mm->addr == HEX_UNKNOWN && !dbGet(mm->maybe_addr, Modes.dbIndex))
-                displayModesMessage(mm);
         }
     }
 
