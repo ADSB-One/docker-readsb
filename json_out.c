@@ -754,7 +754,7 @@ char *sprintAircraftObject(char *p, char *end, struct aircraft *a, int64_t now, 
             {
                 char uuid[32]; // needs 18 chars and null byte
                 p = safe_snprintf(p, end, ",\"recentReceiverIds\":[");
-                int64_t printNewer = now - 3 * SECONDS;
+                int64_t printNewer = now - 15 * SECONDS;
                 int first = 1;
                 for (int i = 0; i < RECENT_RECEIVER_IDS; i++) {
                     idTime *entry = &a->recentReceiverIds[i];
