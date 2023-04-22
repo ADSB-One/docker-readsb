@@ -72,6 +72,10 @@ ifeq ($(PRINT_UUIDS), yes)
   CFLAGS += -DPRINT_UUIDS
 endif
 
+ifneq ($(PRINT_SECONDS),)
+  CFLAGS += -DPRINT_SECONDS=$(PRINT_SECONDS)
+endif
+
 ifeq ($(RTLSDR), yes)
   SDR_OBJ += sdr_rtlsdr.o
   CFLAGS += -DENABLE_RTLSDR
