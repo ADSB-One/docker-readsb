@@ -280,10 +280,6 @@ static struct client *createSocketClient(struct net_service *service, int fd) {
     c->recent_rtt = -1;
 
     c->remote = 1; // Messages will be marked remote by default
-    if ((c->fd == Modes.beast_fd) && (Modes.sdr_type == SDR_MODESBEAST || Modes.sdr_type == SDR_GNS)) {
-        /* Message from a local connected Modes-S beast or GNS5894 are passed off the internet */
-        c->remote = 0;
-    }
 
     //fprintf(stderr, "c->receiverId: %016"PRIx64"\n", c->receiverId);
 
@@ -955,11 +951,6 @@ void modesInitNet(void) {
         // --net-buffer won't increase receive buffer for ingest server to avoid running out of memory using lots of connections
     }
     serviceListen(Modes.beast_in_service, Modes.net_bind_address, Modes.net_input_beast_ports, Modes.net_epfd);
-
-    /* Beast input from local Modes-S Beast via USB */
-    if (Modes.sdr_type == SDR_MODESBEAST || Modes.sdr_type == SDR_GNS) {
-        Modes.serial_client = createSocketClient(Modes.beast_in_service, Modes.beast_fd);
-    }
 
     Modes.uat_in_service = serviceInit(&Modes.services_in, "UAT TCP input", NULL, no_heartbeat, no_heartbeat, READ_MODE_ASCII, "\n", decodeUatMessage);
     // for testing ... don't care to create an argument to open this port
@@ -2290,84 +2281,6 @@ static void handle_radarcape_position(float lat, float lon, float alt) {
     }
 }
 
-/**
- * Convert 32bit binary angular measure to double degree.
- * See https://www.globalspec.com/reference/14722/160210/Chapter-7-5-3-Binary-Angular-Measure
- * @param data Data buffer start (MSB first)
- * @return Angular degree.
- */
-static double bam32ToDouble(uint32_t bam) {
-    return (double) ((int32_t) ntohl(bam) * 8.38190317153931E-08);
-}
-
-//
-//=========================================================================
-//
-// This function decodes a GNS HULC protocol message
-
-static void decodeHulcMessage(char *p) {
-    // silently ignore these messages if proper SDR isn't set
-    if (Modes.sdr_type != SDR_GNS)
-        return;
-
-    int alt = 0;
-    double lat = 0.0;
-    double lon = 0.0;
-    char id = *p++; //Get message id
-    unsigned char len = *p++; // Get message length
-    hulc_status_msg_t hsm;
-
-    if (id == 0x01 && len == 0x18) {
-        // HULC Status message
-        for (int j = 0; j < len; j++) {
-            hsm.buf[j] = *p++;
-            // unescape
-            if (*p == 0x1A) {
-                p++;
-            }
-        }
-        /*
-        // Antenna serial
-        Modes.receiver.antenna_serial = ntohl(hsm.status.serial);
-        // Antenna status flags
-        Modes.receiver.antenna_flags = ntohs(hsm.status.flags);
-        // Reserved for internal use
-        Modes.receiver.antenna_reserved = ntohs(hsm.status.reserved);
-        // Antenna Unix epoch (not used)
-        // Antenna GPS satellites used for fix
-        Modes.receiver.antenna_gps_sats = hsm.status.satellites;
-        // Antenna GPS HDOP*10, thus 12 is HDOP 1.2
-        Modes.receiver.antenna_gps_hdop = hsm.status.hdop;
-        */
-
-        // Antenna GPS latitude
-        lat = bam32ToDouble(hsm.status.latitude);
-        // Antenna GPS longitude
-        lon = bam32ToDouble(hsm.status.longitude);
-        // Antenna GPS altitude
-        alt = ntohs(hsm.status.altitude);
-        uint32_t antenna_flags = ntohs(hsm.status.flags);
-        // Use only valid GPS position
-        if ((antenna_flags & 0xE000) == 0xE000) {
-            if (!isfinite(lat) || lat < -90 || lat > 90 || !isfinite(lon) || lon < -180 || lon > 180) {
-                return;
-            }
-            // only use when no fixed location is defined
-            if (!Modes.userLocationValid) {
-                Modes.fUserLat = lat;
-                Modes.fUserLon = lon;
-                Modes.userLocationValid = 1;
-                receiverPositionChanged(lat, lon, alt);
-            }
-        }
-    } else if (id == 0x01 && len > 0x18) {
-        // Future use planed.
-    } else if (id == 0x24 && len == 0x10) {
-        // Response to command #00
-        fprintf(stderr, "Firmware: v%0u.%0u.%0u\n", *(p + 5), *(p + 6), *(p + 7));
-    }
-}
-
 // recompute global Mode A/C setting
 static void autoset_modeac() {
     if (!Modes.mode_ac_auto)
@@ -2567,8 +2480,6 @@ static int decodeBinMessage(struct client *c, char *p, int remote, int64_t now, 
         if (!Modes.mode_ac) {
             if (remote) {
                 Modes.stats_current.remote_received_modeac++;
-            } else {
-                Modes.stats_current.demod_modeac++;
             }
             return 0;
         }
@@ -2586,9 +2497,6 @@ static int decodeBinMessage(struct client *c, char *p, int remote, int64_t now, 
         alt = ieee754_binary32_le_to_float(msg + 12);
 
         handle_radarcape_position(lat, lon, alt);
-        return 0;
-    } else if (ch == 'H') {
-        decodeHulcMessage(p);
         return 0;
     } else if (ch == 'P') {
         // pong message
@@ -2625,17 +2533,6 @@ static int decodeBinMessage(struct client *c, char *p, int remote, int64_t now, 
     mm->signalLevel = ((unsigned char) ch / 255.0);
     mm->signalLevel = mm->signalLevel * mm->signalLevel;
 
-    /* In case of Mode-S Beast use the signal level per message for statistics */
-    if (c == Modes.serial_client) {
-        Modes.stats_current.signal_power_sum += mm->signalLevel;
-        Modes.stats_current.signal_power_count += 1;
-
-        if (mm->signalLevel > Modes.stats_current.peak_signal_power)
-            Modes.stats_current.peak_signal_power = mm->signalLevel;
-        if (mm->signalLevel > 0.50119)
-            Modes.stats_current.strong_signal_count++; // signal power above -3dBFS
-    }
-
     for (j = 0; j < msgLen; j++) { // and the data
         msg[j] = ch = *p++;
     }
@@ -2644,37 +2541,27 @@ static int decodeBinMessage(struct client *c, char *p, int remote, int64_t now, 
     if (msgLen == MODEAC_MSG_BYTES) { // ModeA or ModeC
         if (remote) {
             Modes.stats_current.remote_received_modeac++;
-        } else {
-            Modes.stats_current.demod_modeac++;
         }
         decodeModeAMessage(mm, ((msg[0] << 8) | msg[1]));
         result = 0;
     } else {
         if (remote) {
             Modes.stats_current.remote_received_modes++;
-        } else {
-            Modes.stats_current.demod_preambles++;
         }
         result = decodeModesMessage(mm);
         if (result < 0) {
             if (result == -1) {
                 if (remote) {
                     Modes.stats_current.remote_rejected_unknown_icao++;
-                } else {
-                    Modes.stats_current.demod_rejected_unknown_icao++;
                 }
             } else {
                 if (remote) {
                     Modes.stats_current.remote_rejected_bad++;
-                } else {
-                    Modes.stats_current.demod_rejected_bad++;
                 }
             }
         } else {
             if (remote) {
                 Modes.stats_current.remote_accepted[mm->correctedbits]++;
-            } else {
-                Modes.stats_current.demod_accepted[mm->correctedbits]++;
             }
         }
     }
@@ -3865,9 +3752,7 @@ void modesNetPeriodicWork(void) {
     dump_beast_check(now);
 
     int64_t wait_ms;
-    if (Modes.serial_client) {
-        wait_ms = 20;
-    } else if (Modes.net_only) {
+    if (Modes.net_only) {
         // wait in net-only mode (unless we get network packets, that wakes the wait immediately)
         wait_ms = imax(200, Modes.net_output_flush_interval);
         wait_ms = imin(wait_ms, Modes.next_reconnect_callback - now); // modify wait for reconnect callback timer
@@ -3919,10 +3804,6 @@ void modesNetPeriodicWork(void) {
         threadpool_run(Modes.decodePool, tasks, taskCount);
         struct timespec after = threadpool_get_cumulative_thread_time(Modes.decodePool);
         timespec_add_elapsed(&before, &after, &Modes.stats_current.background_cpu);
-    }
-
-    if (Modes.serial_client) {
-        modesReadFromClient(Modes.serial_client, mb);
     }
 
     if (Modes.net_event_count == Modes.net_maxEvents) {

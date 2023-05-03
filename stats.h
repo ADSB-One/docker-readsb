@@ -58,18 +58,6 @@ struct stats
 {
   int64_t start;
   int64_t end;
-  // Mode S demodulator counts:
-  uint32_t demod_preambles;
-  uint32_t demod_rejected_bad;
-  uint32_t demod_rejected_unknown_icao;
-  uint32_t demod_accepted[MODES_MAX_BITERRORS + 1];
-  uint32_t demod_preamblePhase[5];
-  uint32_t demod_bestPhase[5];
-  uint64_t samples_processed;
-  uint64_t samples_dropped;
-  uint64_t samples_lost;
-  // Mode A/C demodulator counts:
-  uint32_t demod_modeac;
   // number of signals with power > -3dBFS
   uint32_t strong_signal_count;
   // noise floor:

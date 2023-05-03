@@ -72,45 +72,6 @@ ifeq ($(PRINT_UUIDS), yes)
   CFLAGS += -DPRINT_UUIDS
 endif
 
-ifneq ($(PRINT_SECONDS),)
-  CFLAGS += -DPRINT_SECONDS=$(PRINT_SECONDS)
-endif
-
-ifeq ($(RTLSDR), yes)
-  SDR_OBJ += sdr_rtlsdr.o
-  CFLAGS += -DENABLE_RTLSDR
-
-  ifeq ($(HAVE_BIASTEE), yes)
-    CFLAGS += -DENABLE_RTLSDR_BIASTEE
-  endif
-
-  ifdef RTLSDR_PREFIX
-    CFLAGS += -I$(RTLSDR_PREFIX)/include
-    LDFLAGS += -L$(RTLSDR_PREFIX)/lib
-  else
-    CFLAGS += $(shell pkg-config --cflags librtlsdr)
-    LDFLAGS += $(shell pkg-config --libs-only-L librtlsdr)
-  endif
-
-  ifeq ($(STATIC), yes)
-    LIBS_SDR += -Wl,-Bstatic -lrtlsdr -Wl,-Bdynamic -lusb-1.0
-  else
-    LIBS_SDR += -lrtlsdr -lusb-1.0
-  endif
-endif
-
-ifeq ($(BLADERF), yes)
-  SDR_OBJ += sdr_bladerf.o sdr_ubladerf.o
-  CFLAGS += $(shell pkg-config --cflags libbladeRF) -DENABLE_BLADERF
-  LIBS_SDR += $(shell pkg-config --libs libbladeRF)
-endif
-
-ifeq ($(PLUTOSDR), yes)
-    SDR_OBJ += sdr_plutosdr.o
-    CFLAGS += $(shell pkg-config --cflags libiio libad9361) -DENABLE_PLUTOSDR
-    LIBS_SDR += $(shell pkg-config --libs libiio libad9361)
-endif
-
 # add custom overrides if user defines them
 CFLAGS += -g $(OPTIMIZE)
 
@@ -131,9 +92,9 @@ readsb.o: readsb.c *.h .version
 minilzo.o: minilzo/minilzo.c minilzo/minilzo.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
-readsb: readsb.o argp.o anet.o interactive.o mode_ac.o mode_s.o comm_b.o json_out.o net_io.o crc.o demod_2400.o \
+readsb: readsb.o argp.o anet.o mode_ac.o mode_s.o comm_b.o json_out.o net_io.o crc.o \
 	uat2esnt/uat2esnt.o uat2esnt/uat_decode.o \
-	stats.o cpr.o icao_filter.o track.o util.o fasthash.o convert.o sdr_ifile.o sdr_beast.o sdr.o ais_charset.o \
+	stats.o cpr.o icao_filter.o track.o util.o fasthash.o ais_charset.o \
 	globe_index.o geomag.o receiver.o aircraft.o api.o minilzo.o threadpool.o \
 	$(SDR_OBJ) $(COMPAT)
 	$(CC) -o $@ $^ $(LDFLAGS) $(LIBS) $(LIBS_SDR) $(OPTIMIZE)

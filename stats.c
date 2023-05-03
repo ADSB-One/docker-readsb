@@ -79,51 +79,6 @@ void display_stats(struct stats *st) {
 
     printf("Statistics: %s - %s\n", tb_start, tb_end);
 
-    if (!Modes.net_only) {
-        printf("Local receiver:\n");
-        printf("  %llu samples processed\n", (unsigned long long) st->samples_processed);
-        printf("  %llu samples dropped\n", (unsigned long long) st->samples_dropped);
-        printf("  %llu samples lost\n", (unsigned long long) st->samples_lost);
-
-        printf("  %u Mode A/C messages received\n", st->demod_modeac);
-        printf("  %u Mode-S message preambles received\n", st->demod_preambles);
-        printf("    %u with bad message format or invalid CRC\n", st->demod_rejected_bad);
-        printf("    %u with unrecognized ICAO address\n", st->demod_rejected_unknown_icao);
-        printf("    %u accepted with correct CRC\n", st->demod_accepted[0]);
-        for (j = 1; j <= Modes.nfix_crc; ++j)
-            printf("    %u accepted with %d-bit error repaired\n", st->demod_accepted[j], j);
-
-        if (st->noise_power_sum > 0 && st->noise_power_count > 0) {
-            printf("  %.1f dBFS noise power\n",
-                    10 * log10(st->noise_power_sum / st->noise_power_count));
-        }
-
-        if (st->signal_power_sum > 0 && st->signal_power_count > 0) {
-            printf("  %.1f dBFS mean signal power\n",
-                    10 * log10(st->signal_power_sum / st->signal_power_count));
-        }
-
-        if (st->peak_signal_power > 0) {
-            printf("  %.1f dBFS peak signal power\n",
-                    10 * log10(st->peak_signal_power));
-        }
-
-        printf("  %u messages with signal power above -3dBFS\n",
-                st->strong_signal_count);
-
-        printf("\n Phase stats");
-        printf("\n ");
-        for (int i = 0; i < 5; i++) printf(" %8u", i + 3);
-        printf("\n ");
-        for (int i = 0; i < 5; i++) printf(" %8u", st->demod_preamblePhase[i]);
-        printf("\n ");
-        for (int i = 0; i < 5; i++) printf(" %8u", i + 4);
-        printf("\n ");
-        for (int i = 0; i < 5; i++) printf(" %8u", st->demod_bestPhase[i]);
-        printf("\n\n");
-
-    }
-
     if (Modes.net) {
         printf("Network:\n");
         printf("  %.6f MBytes received\n", st->network_bytes_in / 1e6);
@@ -281,22 +236,6 @@ void add_stats(const struct stats *st1, const struct stats *st2, struct stats *t
         target->start = st2->start;
 
     target->end = st1->end > st2->end ? st1->end : st2->end;
-
-    target->demod_preambles = st1->demod_preambles + st2->demod_preambles;
-    target->demod_rejected_bad = st1->demod_rejected_bad + st2->demod_rejected_bad;
-    target->demod_rejected_unknown_icao = st1->demod_rejected_unknown_icao + st2->demod_rejected_unknown_icao;
-    for (i = 0; i < MODES_MAX_BITERRORS + 1; ++i)
-        target->demod_accepted[i] = st1->demod_accepted[i] + st2->demod_accepted[i];
-    target->demod_modeac = st1->demod_modeac + st2->demod_modeac;
-
-    for (int i = 0; i < 5; i++) {
-        target->demod_preamblePhase[i] = st1->demod_preamblePhase[i] + st2->demod_preamblePhase[i];
-        target->demod_bestPhase[i] = st1->demod_bestPhase[i] + st2->demod_bestPhase[i];
-    }
-
-    target->samples_processed = st1->samples_processed + st2->samples_processed;
-    target->samples_dropped = st1->samples_dropped + st2->samples_dropped;
-    target->samples_lost = st1->samples_lost + st2->samples_lost;
 
     add_timespecs(&st1->demod_cpu, &st2->demod_cpu, &target->demod_cpu);
     add_timespecs(&st1->reader_cpu, &st2->reader_cpu, &target->reader_cpu);
@@ -505,48 +444,6 @@ static char * appendStatsJson(char *p, char *end, struct stats *st, const char *
             st->start / 1000.0,
             st->end / 1000.0);
 
-    if (!Modes.net_only) {
-        p = safe_snprintf(p, end,
-                ",\"local\":{\"samples_processed\":%llu"
-                ",\"samples_dropped\":%llu"
-                ",\"samples_lost\":%llu"
-                ",\"modeac\":%u"
-                ",\"modes\":%u"
-                ",\"bad\":%u"
-                ",\"unknown_icao\":%u",
-                (unsigned long long) st->samples_processed,
-                (unsigned long long) st->samples_dropped,
-                (unsigned long long) st->samples_lost,
-                st->demod_modeac,
-                st->demod_preambles,
-                st->demod_rejected_bad,
-                st->demod_rejected_unknown_icao);
-
-        for (i = 0; i <= Modes.nfix_crc; ++i) {
-            if (i == 0) p = safe_snprintf(p, end, ",\"accepted\":[%u", st->demod_accepted[i]);
-            else p = safe_snprintf(p, end, ",%u", st->demod_accepted[i]);
-        }
-
-        p = safe_snprintf(p, end, "]");
-
-        if (st->signal_power_sum > 0 && st->signal_power_count > 0)
-            p = safe_snprintf(p, end, ",\"signal\":%.1f", 10 * log10(st->signal_power_sum / st->signal_power_count));
-        if (st->noise_power_sum > 0 && st->noise_power_count > 0)
-            p = safe_snprintf(p, end, ",\"noise\":%.1f", 10 * log10(st->noise_power_sum / st->noise_power_count));
-        if (st->peak_signal_power > 0)
-            p = safe_snprintf(p, end, ",\"peak_signal\":%.1f", 10 * log10(st->peak_signal_power));
-
-        p = safe_snprintf(p, end, ",\"strong_signals\":%d", st->strong_signal_count);
-
-        p = safe_snprintf(p, end, ",\n\"pre_phase_1\":[");
-        for (int i = 0; i < 5; i++) p = safe_snprintf(p, end, "%9u,", st->demod_preamblePhase[i]);
-        p--; p = safe_snprintf(p, end, "],\"best_phase\" :[");
-        for (int i = 0; i < 5; i++) p = safe_snprintf(p, end, "%9u,", st->demod_bestPhase[i]);
-        p--; p = safe_snprintf(p, end, "]");
-
-        p = safe_snprintf(p, end, "}");
-    }
-
     p = safe_snprintf(p, end, ",\"messages_valid\": %u", st->messages_total);
     p = safe_snprintf(p, end, ",\"position_count_total\": %u", st->pos_all);
 
@@ -714,18 +611,13 @@ struct char_buffer generateStatsJson(int64_t now) {
             "{ \"now\" : %.1f",
             now / 1000.0);
 
-    if (!Modes.net_only) {
-        p = safe_snprintf(p, end, ", \"gain_db\" : %.1f", Modes.gain / 10.0);
-        p = safe_snprintf(p, end, ", \"estimated_ppm\" : %.1f", Modes.estimated_ppm);
-    }
-
     p = appendTypeCounts(p, end);
 
     p = appendStatsJson(p, end, &Modes.stats_1min, "last1min");
 
-    p = appendStatsJson(p, end, &Modes.stats_5min, "last5min");
+//    p = appendStatsJson(p, end, &Modes.stats_5min, "last5min");
 
-    p = appendStatsJson(p, end, &Modes.stats_15min, "last15min");
+//    p = appendStatsJson(p, end, &Modes.stats_15min, "last15min");
 
     p = appendStatsJson(p, end, &Modes.stats_alltime, "total");
     p = safe_snprintf(p, end, "\n}\n");
@@ -819,19 +711,19 @@ struct char_buffer generatePromFile(int64_t now) {
     p = safe_snprintf(p, end, "readsb_messages_valid %u\n", st->messages_total);
     p = safe_snprintf(p, end, "readsb_messages_invalid %u\n",
             st->remote_received_basestation_invalid +
-            st->remote_rejected_bad + st->demod_rejected_bad +
-            st->remote_rejected_unknown_icao + st->demod_rejected_unknown_icao);
+            st->remote_rejected_bad +
+            st->remote_rejected_unknown_icao);
 
-    p = safe_snprintf(p, end, "readsb_messages_modes_valid %u\n", st->remote_accepted[0] + st->demod_accepted[0]);
-    p = safe_snprintf(p, end, "readsb_messages_modes_valid_fixed_bit %u\n", st->remote_accepted[1] + st->demod_accepted[1]);
-    p = safe_snprintf(p, end, "readsb_messages_modes_invalid_bad %u\n", st->remote_rejected_bad + st->demod_rejected_bad);
-    p = safe_snprintf(p, end, "readsb_messages_modes_invalid_unknown_icao %u\n", st->remote_rejected_unknown_icao + st->demod_rejected_unknown_icao);
+    p = safe_snprintf(p, end, "readsb_messages_modes_valid %u\n", st->remote_accepted[0]);
+    p = safe_snprintf(p, end, "readsb_messages_modes_valid_fixed_bit %u\n", st->remote_accepted[1]);
+    p = safe_snprintf(p, end, "readsb_messages_modes_invalid_bad %u\n", st->remote_rejected_bad);
+    p = safe_snprintf(p, end, "readsb_messages_modes_invalid_unknown_icao %u\n", st->remote_rejected_unknown_icao);
     p = safe_snprintf(p, end, "readsb_messages_modes_rejected_delayed %u\n", st->remote_rejected_delayed);
 
     p = safe_snprintf(p, end, "readsb_messages_basestation_valid %u\n", st->remote_received_basestation_valid);
     p = safe_snprintf(p, end, "readsb_messages_basestation_invalid %u\n", st->remote_received_basestation_invalid);
 
-    p = safe_snprintf(p, end, "readsb_messages_modeac_valid %u\n", st->remote_received_modeac + st->demod_modeac);
+    p = safe_snprintf(p, end, "readsb_messages_modeac_valid %u\n", st->remote_received_modeac);
 
     p = safe_snprintf(p, end, "readsb_network_bytes_in %lu\n", (long) st->network_bytes_in);
     p = safe_snprintf(p, end, "readsb_network_bytes_out %lu\n", (long) st->network_bytes_out);
@@ -869,31 +761,6 @@ struct char_buffer generatePromFile(int64_t now) {
                 con->address, con->port, value);
     }
 
-    if (!Modes.net_only) {
-        p = safe_snprintf(p, end, "readsb_sdr_gain %.1f\n", Modes.gain / 10.0);
-
-        if (st->signal_power_sum > 0 && st->signal_power_count > 0)
-            p = safe_snprintf(p, end, "readsb_signal_avg %.1f\n", 10 * log10(st->signal_power_sum / st->signal_power_count));
-        else
-            p = safe_snprintf(p, end, "readsb_signal_avg -50.0\n");
-        if (st->noise_power_sum > 0 && st->noise_power_count > 0)
-            p = safe_snprintf(p, end, "readsb_signal_noise %.1f\n", 10 * log10(st->noise_power_sum / st->noise_power_count));
-        else
-            p = safe_snprintf(p, end, "readsb_signal_noise -50.0\n");
-        if (st->peak_signal_power > 0)
-            p = safe_snprintf(p, end, "readsb_signal_peak %.1f\n", 10 * log10(st->peak_signal_power));
-        else
-            p = safe_snprintf(p, end, "readsb_signal_peak -50.0\n");
-
-        p = safe_snprintf(p, end, "readsb_signal_strong %d\n", st->strong_signal_count);
-
-        p = safe_snprintf(p, end, "readsb_demod_samples_processed %"PRIu64"\n", st->samples_processed);
-        p = safe_snprintf(p, end, "readsb_demod_samples_dropped %"PRIu64"\n", st->samples_dropped);
-        p = safe_snprintf(p, end, "readsb_demod_samples_lost %"PRIu64"\n", st->samples_lost);
-        p = safe_snprintf(p, end, "readsb_demod_estimated_ppm %.1f\n", Modes.estimated_ppm);
-
-        p = safe_snprintf(p, end, "readsb_demod_preambles %"PRIu32"\n", st->demod_preambles);
-    }
     if (Modes.json_globe_index) {
         p = safe_snprintf(p, end, "readsb_trace_current_memory %"PRIu64"\n", Modes.trace_current_size);
         p = safe_snprintf(p, end, "readsb_trace_chunk_memory %"PRIu64"\n", Modes.trace_chunk_size);
@@ -1042,17 +909,17 @@ static void statsCalc() {
         add_stats(&Modes.stats_10[index], &Modes.stats_1min, &Modes.stats_1min);
     }
 
-    reset_stats(&Modes.stats_5min);
-    for (int i = 0; i < 30; ++i) {
-        int index = (Modes.stats_bucket - i + STAT_BUCKETS) % STAT_BUCKETS;
-        add_stats(&Modes.stats_10[index], &Modes.stats_5min, &Modes.stats_5min);
-    }
+//    reset_stats(&Modes.stats_5min);
+//    for (int i = 0; i < 30; ++i) {
+//        int index = (Modes.stats_bucket - i + STAT_BUCKETS) % STAT_BUCKETS;
+//        add_stats(&Modes.stats_10[index], &Modes.stats_5min, &Modes.stats_5min);
+//    }
 
-    reset_stats(&Modes.stats_15min);
-    for (int i = 0; i < 90; ++i) {
-        int index = (Modes.stats_bucket - i + STAT_BUCKETS) % STAT_BUCKETS;
-        add_stats(&Modes.stats_10[index], &Modes.stats_15min, &Modes.stats_15min);
-    }
+//    reset_stats(&Modes.stats_15min);
+//    for (int i = 0; i < 90; ++i) {
+//        int index = (Modes.stats_bucket - i + STAT_BUCKETS) % STAT_BUCKETS;
+//        add_stats(&Modes.stats_10[index], &Modes.stats_15min, &Modes.stats_15min);
+//    }
 
     struct statsCount *s = &(Modes.globalStatsCount);
     s->readsb_aircraft_total = s->readsb_aircraft_with_position + s->readsb_aircraft_no_position;

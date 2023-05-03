@@ -81,20 +81,16 @@ void setExit(int arg) {
     ssize_t res = write(Modes.exitSoonEventfd, &one, sizeof(one));
     MODES_NOTUSED(res);
 }
-static void sigintHandler(int dummy) {
-    MODES_NOTUSED(dummy);
+
+static void exitHandler(int sig) {
     setExit(1);
 
-    signal(SIGINT, SIG_DFL); // reset signal handler - bit extra safety
-    log_with_timestamp("Caught SIGINT, shutting down...");
-}
-
-static void sigtermHandler(int dummy) {
-    MODES_NOTUSED(dummy);
-    setExit(1);
-
-    signal(SIGTERM, SIG_DFL); // reset signal handler - bit extra safety
-    log_with_timestamp("Caught SIGTERM, shutting down...");
+    char *sigX = NULL;
+    if (sig == SIGTERM) { sigX = "SIGTERM"; }
+    if (sig == SIGINT) { sigX = "SIGINT"; }
+    if (sig == SIGQUIT) { sigX = "SIGQUIT"; }
+    if (sig == SIGHUP) { sigX = "SIGHUP"; }
+    log_with_timestamp("Caught %s, shutting down...", sigX);
 }
 
 void receiverPositionChanged(float lat, float lon, float alt) {
@@ -119,8 +115,6 @@ static void configSetDefaults(void) {
     }
 
     // Now initialise things that should not be 0/NULL to their defaults
-    Modes.gain = MODES_MAX_GAIN;
-    Modes.freq = MODES_DEFAULT_FREQ;
     Modes.check_crc = 1;
     Modes.net_heartbeat_interval = MODES_NET_HEARTBEAT_INTERVAL;
     //Modes.db_file = strdup("/usr/local/share/tar1090/git-db/aircraft.csv.gz");
@@ -147,7 +141,6 @@ static void configSetDefaults(void) {
     Modes.json_location_accuracy = 2;
     Modes.maxRange = 1852 * 450; // 450 nmi default max range
     Modes.nfix_crc = 1;
-    Modes.biastee = 0;
     Modes.position_persistence = 4;
     Modes.net_sndbuf_size = 2; // Default to 256 kB SNDBUF / RCVBUF
     Modes.net_output_flush_size = 1280; // Default to 1280 Bytes
@@ -185,8 +178,6 @@ static void configSetDefaults(void) {
 
     Modes.fixDF = 1;
 
-    sdrInitConfig();
-
     reset_stats(&Modes.stats_current);
     for (int i = 0; i < 90; ++i) {
         reset_stats(&Modes.stats_10[i]);
@@ -217,8 +208,6 @@ static void configSetDefaults(void) {
     Modes.max_fds -= 32; // reserve some fds for things we don't account for later like json writing.
                          // this is an high estimate ... if ppl run out of fds for other stuff they should up rlimit
 
-    Modes.sdr_buf_size = 16 * 16 * 1024;
-
     // in seconds, default to 1 hour
     Modes.dump_interval = 60 * 60;
 
@@ -247,7 +236,6 @@ static void modesInit(void) {
     pthread_mutex_init(&Modes.traceDebugMutex, NULL);
     pthread_mutex_init(&Modes.hungTimerMutex, NULL);
 
-    threadInit(&Threads.reader, "reader");
     threadInit(&Threads.upkeep, "upkeep");
     threadInit(&Threads.decode, "decode");
     threadInit(&Threads.json, "json");
@@ -274,24 +262,6 @@ static void modesInit(void) {
     geomag_init();
 
     Modes.sample_rate = (double)2400000.0;
-
-    // Allocate the various buffers used by Modes
-    Modes.trailing_samples = (unsigned)((MODES_PREAMBLE_US + MODES_LONG_MSG_BITS + 16) * 1e-6 * Modes.sample_rate);
-
-    if (!Modes.net_only) {
-        for (int i = 0; i < MODES_MAG_BUFFERS; ++i) {
-            size_t alloc = (Modes.sdr_buf_samples + Modes.trailing_samples) * sizeof (uint16_t);
-            if ((Modes.mag_buffers[i].data = cmalloc(alloc)) == NULL) {
-                fprintf(stderr, "Out of memory allocating magnitude buffer.\n");
-                exit(1);
-            }
-            memset(Modes.mag_buffers[i].data, 0, alloc);
-
-            Modes.mag_buffers[i].length = 0;
-            Modes.mag_buffers[i].dropped = 0;
-            Modes.mag_buffers[i].sampleTimestamp = 0;
-        }
-    }
 
     // Prepare error correction tables
     modesChecksumInit(Modes.nfix_crc);
@@ -477,44 +447,6 @@ void priorityTasksRun() {
         timespec_add_elapsed(&before, &after, &Modes.stats_current.remove_stale_cpu);
     }
     Modes.currentTask = "priorityTasks_end";
-}
-
-//
-//=========================================================================
-//
-// We read data using a thread, so the main thread only handles decoding
-// without caring about data acquisition
-//
-static void *readerEntryPoint(void *arg) {
-    MODES_NOTUSED(arg);
-    srandom(get_seed());
-
-    if (!sdrOpen()) {
-        setExit(2); // unexpected exit
-        log_with_timestamp("sdrOpen() failed, exiting!");
-        return NULL;
-    }
-
-    if (sdrHasRun()) {
-        sdrRun();
-        // Wake the main thread (if it's still waiting)
-        if (!Modes.exit)
-            setExit(2); // unexpected exit
-    } else {
-        struct timespec ts;
-        clock_gettime(CLOCK_REALTIME, &ts);
-
-        pthread_mutex_lock(&Threads.reader.mutex);
-
-        while (!Modes.exit) {
-            threadTimedWait(&Threads.reader, &ts, 15 * SECONDS);
-        }
-        pthread_mutex_unlock(&Threads.reader.mutex);
-    }
-
-    sdrClose();
-
-    return NULL;
 }
 
 static void *jsonEntryPoint(void *arg) {
@@ -711,54 +643,6 @@ static void *globeBinEntryPoint(void *arg) {
     return NULL;
 }
 
-static void timingStatistics(struct mag_buf *buf) {
-    if (0) {
-        static int64_t last;
-
-        double elapsed = buf->sysMicroseconds - last;
-        last = buf->sysMicroseconds;
-
-        static double last_elapsed;
-        // diff more than 2 ms:
-        if (fabs(elapsed - last_elapsed) > 200) {
-            fprintf(stderr, "time between USB transfers: %.0f us\n", elapsed);
-            last_elapsed = elapsed;
-        }
-    }
-
-    {
-        static int64_t last_sys;
-        static int64_t last_sample;
-        if (!last_sys) {
-            last_sys = buf->sysMicroseconds;
-            last_sample = buf->sampleTimestamp;
-        }
-        double elapsed_sys = buf->sysMicroseconds - last_sys;
-        if (elapsed_sys > 30 * SECONDS * 1000) {
-            double elapsed_sample = buf->sampleTimestamp - last_sample;
-            double freq_ratio = elapsed_sample / (elapsed_sys * 12.0);
-            double diff_us = elapsed_sys - elapsed_sample / 12.0;
-            double ppm = (freq_ratio - 1) * 1e6;
-            // ignore the first 30 seconds for alerting purposes
-            if (last_sample != 0) {
-                Modes.estimated_ppm = ppm;
-                if (fabs(ppm) > 600) {
-                    if (ppm < -1000) {
-                        int packets_lost = (int) nearbyint(ppm / -1820);
-                        Modes.stats_current.samples_lost += packets_lost * Modes.sdr_buf_samples;
-                        fprintf(stderr, "Lost %d packets (%.1f us) on USB, MLAT could be UNSTABLE, check sync! (ppm: %.0f)"
-                                "(or the system clock jumped for some reason)\n", packets_lost, diff_us, ppm);
-                    } else {
-                        fprintf(stderr, "SDR ppm out of specification (could cause MLAT issues) or local clock jumped / not syncing with ntp or chrony! ppm: %.0f\n", ppm);
-                    }
-                }
-            }
-            last_sys = buf->sysMicroseconds;
-            last_sample = buf->sampleTimestamp;
-        }
-    }
-}
-
 static void *decodeEntryPoint(void *arg) {
     // only go higher priority if we have multiple processors
     if (Modes.num_procs > 1 && Modes.num_procs > Modes.decodeThreads) {
@@ -778,8 +662,6 @@ static void *decodeEntryPoint(void *arg) {
      */
 
     //fprintf(stderr, "startup complete after %.3f seconds.\n", (mstime() - Modes.startup_time) / 1000.0);
-
-    interactiveInit();
 
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
@@ -802,85 +684,6 @@ static void *decodeEntryPoint(void *arg) {
 
             end_cpu_timing(&start_time, &Modes.stats_current.background_cpu);
         }
-    } else {
-
-        int watchdogCounter = 200; // roughly 20 seconds
-
-        while (!Modes.exit) {
-            struct timespec start_time;
-
-            lockReader();
-            // reader is locked, and possibly we have data.
-            // copy out reader CPU time and reset it
-            add_timespecs(&Modes.reader_cpu_accumulator, &Modes.stats_current.reader_cpu, &Modes.stats_current.reader_cpu);
-            Modes.reader_cpu_accumulator.tv_sec = 0;
-            Modes.reader_cpu_accumulator.tv_nsec = 0;
-
-            struct mag_buf *buf = NULL;
-            if (Modes.first_free_buffer != Modes.first_filled_buffer) {
-                // FIFO is not empty, process one buffer.
-                buf = &Modes.mag_buffers[Modes.first_filled_buffer];
-            } else {
-                buf = NULL;
-            }
-            unlockReader();
-
-            if (buf) {
-                start_cpu_timing(&start_time);
-                demodulate2400(buf);
-                if (Modes.mode_ac) {
-                    demodulate2400AC(buf);
-                }
-
-                Modes.stats_current.samples_processed += buf->length;
-                Modes.stats_current.samples_dropped += buf->dropped;
-                end_cpu_timing(&start_time, &Modes.stats_current.demod_cpu);
-
-                // Mark the buffer we just processed as completed.
-                lockReader();
-                Modes.first_filled_buffer = (Modes.first_filled_buffer + 1) % MODES_MAG_BUFFERS;
-                pthread_cond_signal(&Threads.reader.cond);
-                unlockReader();
-
-                Modes.stats_current.samples_lost += Modes.sdr_buf_samples - buf->length;
-
-                timingStatistics(buf);
-
-                watchdogCounter = 100; // roughly 10 seconds
-            } else {
-                // Nothing to process this time around.
-                if (--watchdogCounter <= 0) {
-                    fprintf(stderr, "<3>SDR wedged, exiting! (check power supply / avoid using an USB extension / SDR might be defective)\n");
-                    setExit(2);
-                    break;
-                }
-            }
-            start_cpu_timing(&start_time);
-            now = mstime();
-            backgroundTasks(now);
-            end_cpu_timing(&start_time, &Modes.stats_current.background_cpu);
-
-            lockReader();
-            int newData = (Modes.first_free_buffer != Modes.first_filled_buffer);
-            unlockReader();
-
-            if (!newData) {
-                /* wait for more data.
-                 * we should be getting data every 50-60ms. wait for max 80 before we give up and do some background work.
-                 * this is fairly aggressive as all our network I/O runs out of the background work!
-                 */
-                threadTimedWait(&Threads.decode, &ts, 80);
-            }
-            mono = mono_milli_seconds();
-            // if removeStale is late by REMOVE_STALE_INTERVAL, force it to run
-            if (mono > Modes.next_remove_stale + REMOVE_STALE_INTERVAL) {
-                //fprintf(stderr, "%.3f >? %3.f\n", mono / 1000.0, (Modes.next_remove_stale + REMOVE_STALE_INTERVAL)/ 1000.0);
-                pthread_mutex_unlock(&Threads.decode.mutex);
-                priorityTasksRun();
-                pthread_mutex_lock(&Threads.decode.mutex);
-            }
-        }
-        sdrCancel();
     }
 
     pthread_mutex_unlock(&Threads.decode.mutex);
@@ -1173,13 +976,6 @@ static void backgroundTasks(int64_t now) {
         modesNetPeriodicWork();
     }
 
-    // Refresh screen when in interactive mode
-    static int64_t next_interactive;
-    if (Modes.interactive && now > next_interactive) {
-        interactiveShowData();
-        next_interactive = now + 42;
-    }
-
     static int64_t next_flip = 0;
     if (now >= next_flip) {
         icaoFilterExpire();
@@ -1218,7 +1014,6 @@ static void cleanup_and_exit(int code) {
         close(Modes.acasFD2);
     // Free any used memory
     geomag_destroy();
-    interactiveCleanup();
     cleanup_globe_index();
     sfree(Modes.dev_name);
     sfree(Modes.filename);
@@ -1243,15 +1038,10 @@ static void cleanup_and_exit(int code) {
     sfree(Modes.net_output_jaero_ports);
     sfree(Modes.net_output_json_ports);
     sfree(Modes.net_output_api_ports);
-    sfree(Modes.beast_serial);
     sfree(Modes.uuidFile);
     sfree(Modes.dbIndex);
     sfree(Modes.db);
 
-    int i;
-    for (i = 0; i < MODES_MAG_BUFFERS; ++i) {
-        sfree(Modes.mag_buffers[i].data);
-    }
     crcCleanupTables();
 
     receiverCleanup();
@@ -1391,18 +1181,6 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state) {
         case OptDevice:
             Modes.dev_name = strdup(arg);
             break;
-        case OptGain:
-            Modes.gain = (int) (atof(arg)*10); // Gain is in tens of DBs
-            break;
-        case OptFreq:
-            Modes.freq = (int) strtoll(arg, NULL, 10);
-            break;
-        case OptDcFilter:
-            Modes.dc_filter = 1;
-            break;
-        case OptBiasTee:
-            Modes.biastee = 1;
-            break;
         case OptFix:
             Modes.nfix_crc = 1;
             break;
@@ -1414,9 +1192,6 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state) {
             break;
         case OptRaw:
             Modes.raw = 1;
-            break;
-        case OptPreambleThreshold:
-            Modes.preambleThreshold = (uint32_t) (imax(imin(strtoll(arg, NULL, 10), PREAMBLE_THRESHOLD_MAX), PREAMBLE_THRESHOLD_MIN));
             break;
         case OptNet:
             Modes.net = 1;
@@ -1716,9 +1491,6 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state) {
         case OptNetVerbatim:
             Modes.net_verbatim = 1;
             break;
-        case OptSdrBufSize:
-            Modes.sdr_buf_size = atoi(arg) * 1024;
-            break;
         case OptNetReceiverId:
             Modes.netReceiverId = 1;
             Modes.ping = 1;
@@ -1824,6 +1596,9 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state) {
                 if (strcasecmp(token[0], "disableAcasJson") == 0) {
                     Modes.enableAcasJson = 0;
                 }
+                if (strcasecmp(token[0], "provokeSegfault") == 0) {
+                    Modes.debug_provoke_segfault = 1;
+                }
             }
             break;
 
@@ -1888,8 +1663,6 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state) {
                         break;
                     case 'd': Modes.debug_no_discard = 1;
                         break;
-                    case 'Z': Modes.debug_provoke_segfault = 1;
-                        break;
                     case 'y': Modes.debug_position_timing = 1;
                         break;
 
@@ -1900,10 +1673,6 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state) {
                 arg++;
             }
             break;
-#ifdef ENABLE_RTLSDR
-        case OptRtlSdrEnableAgc:
-        case OptRtlSdrPpm:
-#endif
         case OptBeastSerial:
         case OptBeastBaudrate:
         case OptBeastDF1117:
@@ -1915,29 +1684,8 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state) {
         case OptIfileName:
         case OptIfileFormat:
         case OptIfileThrottle:
-#ifdef ENABLE_BLADERF
-        case OptBladeFpgaDir:
-        case OptBladeDecim:
-        case OptBladeBw:
-#endif
-#ifdef ENABLE_PLUTOSDR
-        case OptPlutoUri:
-        case OptPlutoNetwork:
-#endif
             if (Modes.sdr_type == SDR_NONE) {
                 fprintf(stderr, "ERROR: SDR / device type specific options must be specified AFTER the --device-type xyz parameter.\n");
-                return ARGP_ERR_UNKNOWN;
-            }
-            /* Forward interface option to the specific device handler */
-            if (sdrHandleOption(key, arg) == false) {
-                fprintf(stderr, "ERROR: Unknown SDR specific option / Mismatch between option and specified device type.\n");
-                return ARGP_ERR_UNKNOWN;
-            }
-            break;
-        case OptDeviceType:
-            // Select device type
-            if (sdrHandleOption(key, arg) == false) {
-                fprintf(stderr, "ERROR: Unknown device type:%s\n", arg);
                 return ARGP_ERR_UNKNOWN;
             }
             break;
@@ -1979,15 +1727,6 @@ int parseCommandLine(int argc, char **argv) {
 
     const char *doc = "readsb Mode-S/ADSB/TIS Receiver   "
         "\nBuild options: "
-#ifdef ENABLE_RTLSDR
-        "ENABLE_RTLSDR "
-#endif
-#ifdef ENABLE_BLADERF
-        "ENABLE_BLADERF "
-#endif
-#ifdef ENABLE_PLUTOSDR
-        "ENABLE_PLUTOSDR "
-#endif
 #ifdef SC16Q11_TABLE_BITS
 #define stringize(x) _stringize(x)
         "SC16Q11_TABLE_BITS=" stringize(SC16Q11_TABLE_BITS)
@@ -2031,7 +1770,6 @@ int parseCommandLine(int argc, char **argv) {
 }
 
 static void configAfterParse() {
-    Modes.sdr_buf_samples = Modes.sdr_buf_size / 2;
     Modes.trackExpireMax = Modes.trackExpireJaero + TRACK_EXPIRE_LONG + 1 * MINUTES;
 
     if (Modes.json_globe_index) {
@@ -2076,17 +1814,9 @@ static void configAfterParse() {
     cpu_set_t mask;
     if (sched_getaffinity(getpid(), sizeof(mask), &mask) == 0) {
         Modes.num_procs = CPU_COUNT(&mask);
-        if (Modes.num_procs < 2 && !Modes.preambleThreshold && Modes.sdr_type != SDR_NONE) {
-            fprintf(stderr, "WARNING: Reducing preamble threshold / decoding performance as this system has only 1 core (explicitely set --preamble-threshold to disable this behaviour)!\n");
-            Modes.preambleThreshold = PREAMBLE_THRESHOLD_PIZERO;
-            Modes.fixDF = 0;
-        }
     }
     if (Modes.num_procs < 1) {
         Modes.num_procs = 1; // sanity check
-    }
-    if (!Modes.preambleThreshold) {
-        Modes.preambleThreshold = PREAMBLE_THRESHOLD_DEFAULT;
     }
 
     if (Modes.mode_ac)
@@ -2169,9 +1899,6 @@ static void configAfterParse() {
             fprintf(stderr, "No networking or SDR input selected, exiting! Try '--device-type rtlsdr'! See 'readsb --help'\n");
             cleanup_and_exit(1);
         }
-    } else if (Modes.sdr_type == SDR_MODESBEAST || Modes.sdr_type == SDR_GNS) {
-        Modes.net = 1;
-        Modes.net_only = 1;
     } else {
         Modes.net_only = 0;
     }
@@ -2372,12 +2099,48 @@ static void *miscEntryPoint(void *arg) {
 
     pthread_exit(NULL);
 }
+static void _sigaction_range(struct sigaction *sa, int first, int last) {
+    int sig;
+    for (sig = first; sig <= last; ++sig) {
+        if (sigaction(sig, sa, NULL)) {
+            /* SIGKILL/SIGSTOP trigger EINVAL.  Ignore by default. */
+            if (errno != EINVAL) {
+                fprintf(stderr, "sigaction(%s[%i]) failed: %s\n", strsignal(sig), sig, strerror(errno));
+            }
+        }
+    }
+}
+static void configureSignals() {
+    // signal handling stuff
+    // block all signals while we maniplate signal handlers
+    sigset_t mask;
+    sigfillset(&mask);
+    sigprocmask(SIG_SETMASK, &mask, NULL);
+    // ignore all signals, then reenable some
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sigfillset(&sa.sa_mask);
+    sa.sa_handler = SIG_IGN;
+
+    _sigaction_range(&sa, 1, 31);
+
+    signal(SIGINT, exitHandler);
+    signal(SIGTERM, exitHandler);
+    signal(SIGQUIT, exitHandler);
+    signal(SIGHUP, exitHandler);
+
+    // unblock signals now that signals are configured
+    sigemptyset(&mask);
+    sigprocmask(SIG_SETMASK, &mask, NULL);
+}
 
 //
 //=========================================================================
 //
 
 int main(int argc, char **argv) {
+
+    configureSignals();
 
     if (0) {
         unlink("test.gz");
@@ -2399,12 +2162,9 @@ int main(int argc, char **argv) {
         return 3;
     }
 
-    // signal handling stuff
     Modes.exitNowEventfd = eventfd(0, EFD_NONBLOCK);
     Modes.exitSoonEventfd = eventfd(0, EFD_NONBLOCK);
-    signal(SIGINT, sigintHandler);
-    signal(SIGTERM, sigtermHandler);
-    signal(SIGUSR1, SIG_IGN);
+
 
     if (argc >= 2 && !strcmp(argv[1], "--structs")) {
         fprintf(stderr, VERSION_STRING"\n");
@@ -2442,8 +2202,9 @@ int main(int argc, char **argv) {
             Modes.stats_alltime.start = Modes.stats_alltime.end =
             Modes.stats_periodic.start = Modes.stats_periodic.end =
             Modes.stats_1min.start = Modes.stats_1min.end =
-            Modes.stats_5min.start = Modes.stats_5min.end =
-            Modes.stats_15min.start = Modes.stats_15min.end = mstime();
+//            Modes.stats_5min.start = Modes.stats_5min.end =
+//            Modes.stats_15min.start = Modes.stats_15min.end =
+            mstime();
 
     for (int j = 0; j < STAT_BUCKETS; ++j)
         Modes.stats_10[j].start = Modes.stats_10[j].end = Modes.stats_current.start;
@@ -2486,10 +2247,6 @@ int main(int argc, char **argv) {
         }
     }
 
-    if (Modes.sdr_type != SDR_NONE) {
-        threadCreate(&Threads.reader, NULL, readerEntryPoint, NULL);
-    }
-
     threadCreate(&Threads.decode, NULL, decodeEntryPoint, NULL);
 
     threadCreate(&Threads.misc, NULL, miscEntryPoint, NULL);
@@ -2523,6 +2280,14 @@ int main(int argc, char **argv) {
     clock_gettime(CLOCK_REALTIME, &ts);
 
     threadCreate(&Threads.upkeep, NULL, upkeepEntryPoint, NULL);
+
+
+    if (Modes.debug_provoke_segfault) {
+        msleep(666);
+        fprintf(stderr, "debug=Z -> provoking SEGFAULT now!\n");
+        int *a = NULL;
+        *a = 0;
+    }
 
     int mainEpfd = my_epoll_create(&Modes.exitSoonEventfd);
     struct epoll_event *events = NULL;
@@ -2581,18 +2346,6 @@ int main(int argc, char **argv) {
                 break;
             }
         }
-
-        if (Modes.debug_provoke_segfault) {
-            static int64_t next_fail;
-            int64_t now = mstime();
-            if (next_fail == 0) {
-                next_fail = now + 15 * SECONDS;
-            } else if (now > next_fail) {
-                fprintf(stderr, "debug=Z -> provoking SEGFAULT now!\n");
-                int *a = NULL;
-                *a = 0;
-            }
-        }
     }
 
     close(mainEpfd);
@@ -2606,10 +2359,6 @@ int main(int argc, char **argv) {
     }
 
     threadSignalJoin(&Threads.misc);
-
-    if (Modes.sdr_type != SDR_NONE) {
-        threadSignalJoin(&Threads.reader);
-    }
 
     threadSignalJoin(&Threads.upkeep);
 
@@ -2669,7 +2418,6 @@ int main(int argc, char **argv) {
     // writes state if Modes.state_dir is set
     Modes.free_aircraft = 1;
     writeInternalState();
-
 
     if (Modes.exit != 1) {
         log_with_timestamp("Abnormal exit.");

@@ -1,46 +1,23 @@
-FROM ubuntu:focal
+FROM alpine:3.14
 
 WORKDIR /readsb
 
-ENV TZ=America/New_York
-RUN ln -snf /usr/share/zoneinfo/${TZ} /etc/localtime && echo ${TZ} > /etc/timezone
-
 # INSTALL RTLSDR DEPENDENCIES, MAKE, AND INSTALL
-RUN apt update && \
-apt install --no-install-recommends --no-install-suggests -y \
-git \
-ca-certificates \
-curl \
+RUN apk add --no-cache git \
 make \
-cmake \ 
 gcc \
 libc-dev \
-pkg-config \
-libusb-1.0-0-dev \
-libusb-1.0-0 \
-libncurses5-dev \
-zlib1g-dev \
-zlib1g \
-libzstd-dev \
-libzstd1 && \
-git clone https://github.com/wiedehopf/readsb . && \
-make PRINT_UUIDS=yes PRINT_SECONDS=60 OPTIMIZE="-O3" && \
-apt remove -y \
-git \
-ca-certificates \
-curl \
-make \
-cmake \
-gcc \
-libc-dev \
-pkg-config \
-libusb-1.0-0-dev \
-zlib1g-dev \
-libzstd-dev && \
-apt autoremove -y && \
-rm -rf /readsb/rtl-sdr /var/lib/apt/lists/*
+zlib \
+zlib-dev \
+zstd \
+zstd-dev && \
+git clone https://github.com/wiedehopf/readsb /tmp/readsb && \
+cd /tmp/readsb && \
+make DISABLE_INTERACTIVE=yes OPTIMIZE="-O3" && \
+apk del make gcc && \
+cp readsb /readsb/ && \
+rm -rf /tmp/readsb
 
-# EXPOSE RELEVANT READSB PORTS
-EXPOSE 30001 30002 30003 30004 30005 30006 30007 30008 30009 30010
+EXPOSE 30001-30010
 
 RUN ["/readsb/readsb", "--help"]

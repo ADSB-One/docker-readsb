@@ -423,12 +423,9 @@ static inline void *malloc_or_exit(size_t alignment, size_t size, const char *fi
 #include "anet.h"
 #include "net_io.h"
 #include "crc.h"
-#include "demod_2400.h"
 #include "stats.h"
 #include "cpr.h"
 #include "icao_filter.h"
-#include "convert.h"
-#include "sdr.h"
 #include "aircraft.h"
 #include "globe_index.h"
 #include "receiver.h"
@@ -440,34 +437,16 @@ static inline void *malloc_or_exit(size_t alignment, size_t size, const char *fi
 
 typedef enum
 {
-    SDR_NONE = 0, SDR_IFILE, SDR_RTLSDR, SDR_BLADERF, SDR_MICROBLADERF, SDR_MODESBEAST, SDR_PLUTOSDR, SDR_GNS
+    SDR_NONE = 0
 } sdr_type_t;
 
 // Structure representing one magnitude buffer
-
-struct mag_buf
-{
-    int64_t sampleTimestamp; // Clock timestamp of the start of this block, 12MHz clock
-    double mean_level; // Mean of normalized (0..1) signal level
-    double mean_power; // Mean of normalized (0..1) power level
-    uint32_t dropped; // Number of dropped samples preceding this buffer
-    unsigned length; // Number of valid samples _after_ overlap. Total buffer length is buf->length + Modes.trailing_samples.
-    int64_t sysTimestamp; // Estimated system time at start of block
-    int64_t sysMicroseconds; // sysTimestamp in microseconds
-    uint16_t *data; // Magnitude data. Starts with Modes.trailing_samples worth of overlap from the previous block
-#if defined(__arm__)
-    /*padding 4 bytes*/
-    uint32_t padding;
-#endif
-};
 
 // Program global state
 
 struct _Threads {
     threadT upkeep; // runs priorityTasksUpdate, locks most other threads when doing its thing
     threadT decode; // thread doing demodulation, decoding and networking
-
-    threadT reader;
 
     threadT json; // thread writing json
     threadT globeJson; // thread writing json
@@ -496,9 +475,6 @@ struct _Modes
     threadpool_t *allPool;
     task_group_t *allTasks;
 
-    uint32_t sdr_buf_size;
-    uint32_t sdr_buf_samples;
-
     int64_t traceWriteTimelimit;
     int tracePoolSize;
     threadpool_t *tracePool;
@@ -515,21 +491,12 @@ struct _Modes
     char *currentTask;
     int64_t joinTimeout;
 
-    unsigned first_free_buffer; // Entry in mag_buffers that will next be filled with input.
-    unsigned first_filled_buffer; // Entry in mag_buffers that has valid data and will be demodulated next. If equal to next_free_buffer, there is no unprocessed data.
-    unsigned trailing_samples; // extra trailing samples in magnitude buffers
     int volatile exit; // Exit from the main loop when true
     int volatile exitSoon;
     int fd; // --ifile option file descriptor
-    input_format_t input_format; // --iformat option
-    iq_convert_fn converter_function;
     char * dev_name;
-    int gain;
-    int dc_filter; // should we apply a DC filter?
-    int enable_agc;
+
     sdr_type_t sdr_type; // where are we getting data from?
-    int freq;
-    int ppm_error;
     char aneterr[ANET_ERR_LEN];
     struct net_service_group services_in; // Active services which primarily receive data
     struct net_service_group services_out; // Active services which primarily send data
@@ -710,7 +677,6 @@ struct _Modes
     uint32_t show_only; // Only show messages from this ICAO
     uint64_t receiver_focus;
 
-    uint32_t preambleThreshold;
     int net_output_flush_size; // Minimum Size of output data
     int32_t net_output_beast_reduce_interval; // Position update interval for data reduction
     int32_t ping_reduce;
@@ -793,11 +759,6 @@ struct _Modes
     int specialTileCount;
     int json_gzip; // Enable extra globe indexed json files.
 
-    int beast_fd; // Local Modes-S Beast handler
-    int beast_baudrate; // Mode-S beast and similar baud rate
-    char *beast_serial; // Modes-S Beast device path
-    struct client *serial_client;
-
     int net_sndbuf_size; // TCP output buffer size (64Kb * 2^n)
     int json_aircraft_history_next;
     int json_aircraft_history_full;
@@ -805,7 +766,6 @@ struct _Modes
     float messageRateMult;
     uint32_t binCraftVersion; // never change the type for this variable
     int8_t userLocationValid;
-    int8_t biastee;
     int8_t triggerPermWriteDay;
     int8_t acasDay;
     int8_t traceDay;
@@ -814,9 +774,6 @@ struct _Modes
 
     int8_t updateStats;
     int8_t staleStop;
-
-    struct timespec reader_cpu_accumulator; // CPU time used by the reader thread, copied out and reset by the main thread under the mutex
-    ALIGNED struct mag_buf mag_buffers[MODES_MAG_BUFFERS]; // Converted magnitude buffers from RTL or file input
 
     int64_t startup_time;
     int64_t next_stats_update;
@@ -829,8 +786,8 @@ struct _Modes
     struct stats stats_alltime;
     struct stats stats_periodic;
     struct stats stats_1min;
-    struct stats stats_5min;
-    struct stats stats_15min;
+//    struct stats stats_5min;
+//    struct stats stats_15min;
 
     struct statsCount globalStatsCount;
 
