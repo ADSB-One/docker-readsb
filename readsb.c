@@ -150,7 +150,7 @@ static void configSetDefaults(void) {
     Modes.net_output_flush_interval = 50; // Default to 50 ms
     Modes.netReceiverId = 0;
     Modes.netIngest = 0;
-    Modes.uuidFile = strdup("/usr/local/share/adsbexchange/adsbx-uuid");
+    Modes.uuidFile = strdup("/usr/local/share/adsb/uuid");
     Modes.json_trace_interval = 20 * 1000;
     Modes.heatmap_current_interval = -15;
     Modes.heatmap_interval = 60 * SECONDS;
